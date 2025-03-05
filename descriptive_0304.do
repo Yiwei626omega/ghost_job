@@ -230,11 +230,7 @@ preserve
     
     * Create formatted date variable for improved labeling
     gen date_str = string(yq, "%tq")
-    
-    * Find y-axis min and max values for the vertical line
-    summarize avg_gap_pct_q_w
-    local ymin = r(min)
-    local ymax = r(max)
+ 
     
 * Analyze trends by quintile
 preserve
