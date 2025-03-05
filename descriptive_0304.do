@@ -16,7 +16,110 @@ global result "results"
 
 * Load dataset and handle outliers
 use "$data/yq_0303.dta", clear
-winsor2 gap_pct_q
+
+// measures are winsorized at 1%,99%, with suffix _w
+
+
+/*===========================================================================*/
+/* SECTION 0: General trend graph of gap_pct_w over time                     */
+/*===========================================================================*/
+
+* This code aggregates data to quarter level and plots the trend
+
+/*---------------------------------------------------------------------------*/
+/* Trend of Gap                                							     */
+/*---------------------------------------------------------------------------*/
+* Collapse data to quarter level, summing the key variables
+preserve
+collapse (sum) jp_q_w inflow_q_w employment_pre_q_w, by(yq)
+
+* Generate gap_pct_w at the aggregate level for each quarter
+gen gap_pct = (jp_q_w - inflow_q_w) / employment_pre_q_w // Multiply by 100 to get percentage
+
+* Generate a date variable for better x-axis formatting
+gen date = qofd(dofq(yq))
+format date %tq
+
+* Create line graph of the trend
+twoway (line gap_pct date if yq>=201 & yq < 244, lcolor(navy) lwidth(medium)), ///
+       title("Trend in Gap % Over Time", size(medium)) ///
+       subtitle("Calculated as (Job Postings - Inflows)/Pre-period Employment") ///
+       xtitle("Quarter") ///
+       ytitle("Gap %") ///
+       ylabel(, angle(horizontal)) ///
+       tlabel(, labsize(small)) ///
+       legend(off)
+
+* Export graph if needed
+graph export gap_trend.png, replace width(1200) height(800)
+
+* Restore original dataset
+restore
+
+/*---------------------------------------------------------------------------*/
+/* Trend of Job Postings                                					 */
+/*---------------------------------------------------------------------------*/
+
+* General trend graph of gap_pct_w over time
+* This code aggregates data to quarter level and plots the trend
+
+* Collapse data to quarter level, summing the key variables
+preserve
+collapse (sum) jp_q_w, by(yq)
+
+* Generate a date variable for better x-axis formatting
+gen date = qofd(dofq(yq))
+format date %tq
+
+* Create line graph of the trend
+twoway (line jp_q_w date if yq>=201 & yq < 244, lcolor(navy) lwidth(medium)), ///
+       title("Trend in Job Postings Over Time", size(medium)) ///
+       xtitle("Quarter") ///
+       ytitle("Total Job Postings") ///
+       ylabel(, angle(horizontal)) ///
+       tlabel(, labsize(small)) ///
+       legend(off)
+
+* Export graph if needed
+graph export jp_trend.png, replace width(1200) height(800)
+
+* Restore original dataset
+restore
+
+* General trend graph of gap_pct_w and industry over time
+* This code aggregates data to quarter level and plots the trend
+
+**# By Industries
+
+* Collapse data to quarter level, summing the key variables
+preserve
+collapse (sum) jp_q_w inflow_q_w employment_pre_q_w, by(gsector)
+
+* Generate gap_pct_w at the aggregate level for each quarter
+gen gap_pct = (jp_q_w - inflow_q_w) / employment_pre_q_w * 100 // Multiply by 100 to get percentage
+
+* Define value labels for gsector based on GICS sector codes
+label define gsector_lbl ///
+    10 "Energy" ///
+    15 "Materials" ///
+    20 "Industrials" ///
+    25 "Consumer Discretionary" ///
+    30 "Consumer Staples" ///
+    35 "Health Care" ///
+    40 "Financials" ///
+    45 "Information Technology" ///
+    50 "Communication Services" ///
+    55 "Utilities" ///
+    60 "Real Estate"
+
+* Assign the label to the gsector variable
+label values gsector gsector_lbl
+graph bar gap_pct, over(gsector, label(angle(45))) ///
+    title("Average Ghost Job Rate by Industry") ytitle("Gap Percentage")
+* Export graph if needed
+graph export gap_industry_trend.png, replace width(1200) height(800)
+* Restore original dataset
+restore
 
 
 /*===========================================================================*/
@@ -66,8 +169,8 @@ restore
    - Are certain quintiles more "sticky" than others? */
 
 * Generate lagged quintile to track quarter-to-quarter movement
-sort gvkey yq
-by gvkey: gen lag_quintile = gap_quintile[_n-1] if yq==yq[_n-1]+1
+tsset gvkey yq
+gen lag_quintile = l.gap_quintile
 
 * Create transition matrix showing movement between quintiles
 * Row percentages show probability of moving from one quintile to another
@@ -391,7 +494,7 @@ restore
 merge m:1 gvkey using "ar1_coefficients_with_obs.dta", nogen
 
 replace ar1_coef_trend = . if n_obs<20
-
+sum ar1_coef_trend,d
 
 /*---------------------------------------------------------------------------*/
 /* 3.2 Correlation                                                           */
@@ -501,7 +604,7 @@ restore
 merge m:1 gvkey using "spike.dta", nogen
 
 
-
+sum spike_pct,d
 
 /*===========================================================================*/
 /* SECTION 4: CATEGORICAL CLASSIFICATION                                     */
