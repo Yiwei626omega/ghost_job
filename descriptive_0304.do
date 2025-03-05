@@ -394,7 +394,7 @@ replace ar1_coef_trend = . if n_obs<20
 
 
 /*---------------------------------------------------------------------------*/
-/* 3.2 Correlation                                             */
+/* 3.2 Correlation                                                           */
 /*---------------------------------------------------------------------------*/
 
 * Autocorrelation analysis - properly handling multiple MSAs per gvkey-quarter
@@ -457,6 +457,50 @@ merge m:1 gvkey using corr_results.dta, keep(1 3) nogen
 
 replace corr_lag1 = . if n_obs_corr<20
 sum corr_lag1,d
+
+
+/*---------------------------------------------------------------------------*/
+/* 3.3 Spike %                                                           */
+/*---------------------------------------------------------------------------*/
+// Spike is defined as the change larger than 2 std compared to the mean gap of a firm
+
+preserve
+* Step 1: Collapse to firm-quarter level
+collapse (mean) gap_pct_w , by(gvkey yq)
+
+* Step 2: Calculate firm-level mean and standard deviation
+bysort gvkey: egen firm_mean_gap = mean(gap_pct_w)
+bysort gvkey: egen firm_sd_gap = sd(gap_pct_w)
+
+* Step 3: Calculate standardized measure (std_gap)
+gen std_gap = (gap_pct_w - firm_mean_gap) / firm_sd_gap if firm_sd_gap > 0 & !missing(firm_sd_gap)
+
+* Step 4: Detect spikes (std_gap > 2)
+gen spike = (std_gap > 2) if !missing(std_gap)
+
+
+* Step 5: Count spikes and calculate percentage of quarters with spikes
+bysort gvkey: egen num_spikes = sum(spike)
+bysort gvkey: egen total_quarters = count(yq)
+
+replace spike = 0 if missing(spike) | total_quarters < 20
+
+gen spike_pct = (num_spikes / total_quarters) * 100 if total_quarters > 0
+
+* Step 6: Keep only necessary variables for merging back
+keep gvkey num_spikes total_quarters spike_pct
+
+* Step 7: Remove duplicates at the firm level (since we need one record per firm)
+duplicates drop gvkey, force
+
+* Step 8: Save results
+save "spike.dta", replace
+restore
+
+* Step 9: Merge the firm-level spike statistics back to the original dataset
+merge m:1 gvkey using "spike.dta", nogen
+
+
 
 
 /*===========================================================================*/
@@ -584,6 +628,62 @@ label values gap_category_corr gap_cat
 * Examine distribution of firms across categories
 tab gap_category_corr, missing
 
+/*---------------------------------------------------------------------------*/
+/* 4.3 Percentage of Spikes                                                  */
+/*---------------------------------------------------------------------------*/
+
+preserve
+    * Collapse to firm level for classification
+    collapse (mean) firm_mean_gap=gap_pct_q_w (mean) spike_pct, by(gvkey)
+
+    * Calculate quartiles for classification boundaries
+    sum firm_mean_gap, detail
+    local q3_mean_gap = r(p75)  // Top quartile (75th percentile)
+    local q1_mean_gap = r(p25)  // Bottom quartile (25th percentile)
+
+    * Calculate quartiles for persistence measure
+    sum spike_pct, detail
+    local q3_spike_pct = r(p75)  // Top quartile for absolute persistence
+    local q1_spike_pct = r(p25)  // Bottom quartile for absolute persistence
+
+    * Document threshold values in log
+    di "75th percentile (High) of firm_mean_gap: `q3_mean_gap'"
+    di "25th percentile (Low) of firm_mean_gap: `q1_mean_gap'"
+    di "75th percentile (Persistent) of spike_pct: `q3_abs_corr'"
+    di "25th percentile (Non-persistent) of spike_pct: `q1_abs_corr'"
+
+    /* Create binary classification variables
+       - High/low gap: based on quartiles of average gap posting rate
+       - Persistent/non-persistent: based on quartiles of spike_pct */
+    gen high_gap = (firm_mean_gap >= `q3_mean_gap') & (firm_mean_gap != .)
+    gen low_gap = (firm_mean_gap <= `q1_mean_gap') & (firm_mean_gap != .)
+    gen persistent = (spike_pct >= `q3_spike_pct') & (spike_pct != .)
+    gen non_persistent = (spike_pct <= `q1_spike_pct') & (spike_pct != .)
+
+    /* Create categorical variable combining both dimensions
+       - Creates 5 distinct firm types based on gap level and persistence */
+    gen gap_category_spike = .
+    replace gap_category_spike = 1 if high_gap == 1 & persistent == 1      // High & Persistent
+    replace gap_category_spike = 2 if high_gap == 1 & non_persistent == 1  // High & Non-Persistent
+    replace gap_category_spike = 3 if low_gap == 1 & persistent == 1       // Low & Persistent
+    replace gap_category_spike = 4 if low_gap == 1 & non_persistent == 1   // Low & Non-Persistent
+    replace gap_category_spike = 5 if (high_gap == 0 & low_gap == 0) | (persistent == 0 & non_persistent == 0)  // Middle Group
+
+    * Save firm-level classifications
+    keep gvkey high_gap low_gap persistent non_persistent gap_category_spike
+    tempfile firm_classifications_spike
+    save `firm_classifications_spike'
+restore
+
+
+* Merge firm classifications to main dataset
+merge m:1 gvkey using `firm_classifications_spike', keep(3) nogen
+
+label values gap_category_spike gap_cat
+
+* Examine distribution of firms across categories
+tab gap_category_spike, missing
+
 
 /*===========================================================================*/
 /* SECTION 5: ANALYSIS BY FIRM CATEGORY                                      */
@@ -625,11 +725,25 @@ graph hbar (mean) mkvaltq_w_z roa_w_z inst_pct_w_z analyst_follow_z, ///
     blabel(bar, format(%5.2f) size(vsmall)) ///
     ysize(6) xsize(8) ///
     scheme(s1color)
+	
+* Create horizontal bar chart comparing standardized metrics
+graph hbar (mean) mkvaltq_w_z roa_w_z inst_pct_w_z analyst_follow_z, ///
+    over(gap_category_spike, sort(1) descending label(labsize(small))) ///
+    title("Key Financial Metrics by gap Posting Type", size(medium)) ///
+    subtitle("Standardized Values (Z-scores), Quartile-Based Classification", size(small)) ///
+    legend(label(1 "Market Value") label(2 "ROA") label(3 "Institutional %") ///
+           label(4 "Analyst Coverage") size(small)) ///
+    blabel(bar, format(%5.2f) size(vsmall)) ///
+    ysize(6) xsize(8) ///
+    scheme(s1color)	
+	
 
 /*---------------------------------------------------------------------------*/
 /* 5.2 Time Series Trends by Category                                        */
 /*---------------------------------------------------------------------------*/
-* Using AR1
+
+**# Using AR1
+
 preserve
     * Collapse data to category-quarter level
     collapse (mean) gap_pct_q_w, by(gap_category yq)
@@ -661,7 +775,8 @@ preserve
     graph export "gap_posting_category_trends.png", replace width(1200)
 restore
 
-* Using Correlation
+**# Using Correlation
+
 preserve
     * Collapse data to category-quarter level
     collapse (mean) gap_pct_q_w, by(gap_category_corr yq)
@@ -694,6 +809,39 @@ preserve
 restore
 
 
+
+**# Using Spike_pct
+
+preserve
+    * Collapse data to category-quarter level
+    collapse (mean) gap_pct_q_w, by(gap_category_spike yq)
+    
+    * Keep only relevant time period
+    keep if yq >= 200 & yq < 244
+    
+    * Ensure yq is formatted properly for time axis
+    format yq %tq
+
+    * Create combined trend chart for all categories
+    twoway ///
+      (line gap_pct_q_w yq if gap_category_spike==1, lcolor(purple)) ///
+      (line gap_pct_q_w yq if gap_category_spike==2, lcolor(red)) ///
+      (line gap_pct_q_w yq if gap_category_spike==3, lcolor(green)) ///
+      (line gap_pct_q_w yq if gap_category_spike==4, lcolor(navy)) ///
+      (line gap_pct_q_w yq if gap_category_spike==5, lcolor(gray)), ///
+      title("Gap Posting Trends by Category", size(medium)) ///
+      subtitle("Average gap_pct_q_w over Time") ///
+      xtitle("Year-Quarter") ytitle("gap Posting Rate (gap_pct_q_w)") ///
+      xlabel(, angle(45) labsize(small)) ///
+      ylabel(, grid) ///
+      legend(order(1 "High & Persistent" 2 "High & Non-Persistent" ///
+                   3 "Low & Persistent" 4 "Low & Non-Persistent" 5 "Middle Group") ///
+             cols(2) position(6) size(small)) ///
+      scheme(s1color) name(category_trends, replace)
+      
+    * Export high-resolution image
+    graph export "gap_posting_category_spike_trends.png", replace width(1200)
+restore
 /*---------------------------------------------------------------------------*/
 /* 5.3 Industry Distribution by Category                                     */
 /*---------------------------------------------------------------------------*/
