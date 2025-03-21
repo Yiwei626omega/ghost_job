@@ -17,6 +17,10 @@ global result "results"
 * Load dataset and handle outliers
 use "$data/yq_0303.dta", clear
 
+merge 1:1 gvkey year quarter using "$data/msa_count.dta"
+drop if _merge==2
+drop _merge
+
 // measures are winsorized at 1%,99%, with suffix _w
 
 
@@ -1041,3 +1045,66 @@ preserve
     graph export "gap_category_corr_by_sector.png", replace width(1200)
 restore
 
+preserve
+    * Exclude middle category for clearer analysis
+    drop if gap_category_spike == 5
+    
+    * Collapse to get counts by sector and category
+    collapse (count) n=gap_pct_q_w, by(gsector gap_category_spike)
+    
+    * Calculate percentage within each sector
+    bysort gsector: egen total = sum(n)
+    gen percentage = 100 * n / total
+
+    * Define descriptive labels for GICS sectors
+    label define gsector_lbl ///
+        10 "Energy" ///
+        15 "Materials" ///
+        20 "Industrials" ///
+        25 "Consumer Discretionary" ///
+        30 "Consumer Staples" ///
+        35 "Health Care" ///
+        40 "Financials" ///
+        45 "Information Technology" ///
+        50 "Communication Services" ///
+        55 "Utilities" ///
+        60 "Real Estate"
+    label values gsector gsector_lbl
+
+    * Create stacked bar chart showing category distribution by sector
+    graph bar percentage, over(gap_category_spike, label(labsize(small))) ///
+          over(gsector, label(angle(45) labsize(small))) ///
+          title("Distribution of Gap Posting Categories by Sector", size(medium)) ///
+          ytitle("Percentage within Sector") ///
+          ylabel(0(20)100, grid) ///
+          asyvars stack ///
+          legend(order(1 "High & Persistent" 2 "High & Non-Persistent" ///
+                       3 "Low & Persistent" 4 "Low & Non-Persistent") ///
+                 cols(2) position(6) ring(1) size(small)) ///
+          bar(1, color(purple)) ///
+          bar(2, color(red)) ///
+          bar(3, color(green)) ///
+          bar(4, color(blue)) ///
+          scheme(s1color) name(sector_distribution, replace)
+
+    * Export high-resolution image
+    graph export "gap_category_corr_by_sector.png", replace width(1200)
+restore
+
+
+/*===========================================================================*/
+/* SECTION 6: ANALYSIS BY FIRM CATEGORY                                      */
+/*===========================================================================*/
+
+bys gvkey: egen firm_mean_gap = mean(gap_pct_q_w)
+bys gvkey: egen firm_sd_gap = sd(gap_pct_q_w)
+
+gen ar1_coef_abs =  abs(ar1_coef_trend)
+gen corr1_abs =  abs(corr_lag1)
+
+preserve
+duplicates drop gvkey, force
+pwcorr firm_mean_gap firm_sd_gap ar1_coef_abs corr1_abs, sig
+restore
+
+pwcorr gap_pct_q_w firm_sd_gap ar1_coef_abs corr1_abs atq_w mkvaltq_w btm_w lev_w roa_w inst_pct_w analyst_follow msa_count,sig
