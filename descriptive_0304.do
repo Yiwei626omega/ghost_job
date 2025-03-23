@@ -119,7 +119,7 @@ label define gsector_lbl ///
 * Assign the label to the gsector variable
 label values gsector gsector_lbl
 graph bar gap_pct, over(gsector, label(angle(45))) ///
-    title("Average Ghost Job Rate by Industry") ytitle("Gap Percentage")
+    title("Average Gap Job Rate by Industry") ytitle("Gap Percentage")
 * Export graph if needed
 graph export gap_industry_trend.png, replace width(1200) height(800)
 * Restore original dataset
@@ -234,6 +234,85 @@ restore
 /*===========================================================================*/
 /* SECTION 2: FIXED-PERIOD QUINTILE ANALYSIS                                 */
 /*===========================================================================*/
+
+**********************************************************************
+* Mean Reversion Test for gap_pct_q_w
+**********************************************************************
+
+* First ensure the data is sorted properly
+xtset gvkey yq
+
+preserve
+collapse (mean) gap_pct_q_w=gap_pct_q_w, by(gvkey yq)
+
+* Create quintiles of gap_pct_q_w for each quarter
+bysort yq: egen quintile = xtile(gap_pct_q_w), nq(5)
+
+* Store the initial value of gap_pct_q_w
+gen initial_gap = gap_pct_q_w
+
+* For each gvkey-quarter, generate future gap_pct_q_w values up to 20 quarters ahead
+forvalues t = 1/20 {
+    bysort gvkey (yq): gen gap_t`t' = gap_pct_q_w[_n+`t'] if gvkey==gvkey[_n+`t']
+}
+
+* Create a matrix to store average gap_pct_q_w values by initial quintile and time period
+matrix mean_gap = J(5, 21, .)
+matrix colnames mean_gap = t0 t1 t2 t3 t4 t5 t6 t7 t8 t9 t10 t11 t12 t13 t14 t15 t16 t17 t18 t19 t20
+
+* For each initial quintile, calculate future average gap_pct_q_w values
+forvalues q = 1/5 {
+    * Store the initial average gap_pct_q_w in the first column (t0)
+    quietly sum gap_pct_q_w if quintile == `q'
+    matrix mean_gap[`q', 1] = r(mean)
+    
+    * Calculate average future gap_pct_q_w for periods t1 through t20
+    forvalues t = 1/20 {
+        quietly sum gap_t`t' if quintile == `q'
+        matrix mean_gap[`q', `t'+1] = r(mean)
+    }
+}
+
+* Calculate overall mean for reference line
+quietly sum gap_pct_q_w
+local overall_mean = r(mean)
+
+* Save the matrix as a dataset for plotting
+clear
+svmat mean_gap, names(col)
+
+* Create an ID variable before reshaping
+gen init_quintile = _n
+
+* Reshape for easier plotting
+reshape long t, i(init_quintile) j(period)
+rename t avg_gap
+
+* Label variables
+label var period "Quarters ahead"
+label var avg_gap "Average gap_pct_q_w"
+label var init_quintile "Initial quintile"
+
+* Create the plot of gap_pct_q_w progression over time
+twoway (line avg_gap period if init_quintile==1, lcolor(blue) lwidth(medthick)) ///
+       (line avg_gap period if init_quintile==2, lcolor(green) lwidth(medthick)) ///
+       (line avg_gap period if init_quintile==3, lcolor(orange) lwidth(medthick)) ///
+       (line avg_gap period if init_quintile==4, lcolor(red) lwidth(medthick)) ///
+       (line avg_gap period if init_quintile==5, lcolor(purple) lwidth(medthick)) ///
+       (function y=`overall_mean', range(0 20) lcolor(gray) lpattern(dash)), ///
+       ytitle("Average gap_pct_q_w") xtitle("Quarters Ahead") ///
+       title("Mean Reversion in Gap Posting Rates") ///
+       subtitle("Tracking gap_pct_q_w Values Over 20 Quarters by Initial Quintile") ///
+       xlabel(0(2)20) ///
+       legend(order(1 "Q1 (Lowest)" 2 "Q2" 3 "Q3" 4 "Q4" 5 "Q5 (Highest)" 6 "Overall Mean"))
+
+* Save the graph
+graph export "mean_reversion_gap_plot.png", replace
+
+
+* Go back to the original dataset
+restore
+
 
 /*---------------------------------------------------------------------------*/
 /* 2.1 2010 Q2 Base Period Classification                                    */
@@ -609,6 +688,81 @@ merge m:1 gvkey using "spike.dta", nogen
 
 
 sum spike_pct,d
+
+/*===========================================================================*/
+/* SECTION 4: Description on Levels and Persistence                          */
+/*===========================================================================*/
+
+bys gvkey: egen firm_mean_gap = mean(gap_pct_q_w)
+bys gvkey: egen firm_sd_gap = sd(gap_pct_q_w)
+bys gvkey: egen firm_inst_pct = mean(inst_pct_w)
+
+gen ar1_coef_abs =  abs(ar1_coef_trend)
+gen corr1_abs =  abs(corr_lag1)
+
+* Binscatter
+binscatter ar1_coef_trend firm_mean_gap, xtitle("Firm Mean Gap") ytitle("AR(1) Coefficient Trend") 
+binscatter ar1_coef_abs firm_mean_gap,xtitle("Firm Mean Gap ") ytitle("AR(1)_absolute Coefficient Trend") 
+binscatter corr_lag1 firm_mean_gap,xtitle("Firm Mean Gap") ytitle("Correlation Coefficient Trend") 
+binscatter corr1_abs firm_mean_gap,xtitle("Firm Mean Gap") ytitle("Correlation_absolute Coefficient Trend") 
+binscatter spike_pct firm_mean_gap,xtitle("Firm Mean Gap") ytitle("Correlation_absolute Coefficient Trend") 
+
+**********************************************************************
+* Combined Binscatter Panel Plot
+* Created: March 20, 2025
+**********************************************************************
+
+* First create each individual binscatter and save it
+* Plot 1: AR(1) Coefficient Trend
+binscatter ar1_coef_trend firm_mean_gap, ///
+    xtitle("Firm Mean Gap", size(small)) ///
+    ytitle("AR(1) Coefficient Trend", size(small)) ///
+    title("AR(1) Coefficient", size(medium)) ///
+    msymbol(circle) mcolor(navy) ///
+    linetype(lfit) lcolor(maroon) ///
+    savegraph("bin1.gph") replace
+    
+* Plot 2: AR(1) Absolute Coefficient
+binscatter ar1_coef_abs firm_mean_gap, ///
+    xtitle("Firm Mean Gap", size(small)) ///
+    ytitle("AR(1) Absolute Coefficient", size(small)) ///
+    title("AR(1) Absolute Coefficient", size(medium)) ///
+    msymbol(circle) mcolor(navy) ///
+    linetype(lfit) lcolor(maroon) ///
+    savegraph("bin2.gph") replace
+    
+* Plot 3: Correlation Lag 1
+binscatter corr_lag1 firm_mean_gap, ///
+    xtitle("Firm Mean Gap", size(small)) ///
+    ytitle("Correlation Lag 1", size(small)) ///
+    title("Lag 1 Correlation", size(medium)) ///
+    msymbol(circle) mcolor(navy) ///
+    linetype(lfit) lcolor(maroon) ///
+    savegraph("bin3.gph") replace
+    
+* Plot 4: Correlation Absolute
+binscatter corr1_abs firm_mean_gap, ///
+    xtitle("Firm Mean Gap", size(small)) ///
+    ytitle("Correlation Absolute", size(small)) ///
+    title("Absolute Correlation", size(medium)) ///
+    msymbol(circle) mcolor(navy) ///
+    linetype(lfit) lcolor(maroon) ///
+    savegraph("bin4.gph") replace
+    
+* Plot 5: Spike Percentage
+binscatter spike_pct firm_mean_gap, ///
+    xtitle("Firm Mean Gap", size(small)) ///
+    ytitle("Spike Percentage", size(small)) ///
+    title("Spike Percentage", size(medium)) ///
+    msymbol(circle) mcolor(navy) ///
+    linetype(lfit) lcolor(maroon) ///
+    savegraph("bin5.gph") replace
+
+
+pwcorr gap_pct_q_w firm_sd_gap ar1_coef_abs corr1_abs atq_w mkvaltq_w btm_w lev_w roa_w inst_pct_w analyst_follow msa_count,sig
+
+
+
 
 /*===========================================================================*/
 /* SECTION 4: CATEGORICAL CLASSIFICATION                                     */
@@ -1092,19 +1246,3 @@ preserve
 restore
 
 
-/*===========================================================================*/
-/* SECTION 6: ANALYSIS BY FIRM CATEGORY                                      */
-/*===========================================================================*/
-
-bys gvkey: egen firm_mean_gap = mean(gap_pct_q_w)
-bys gvkey: egen firm_sd_gap = sd(gap_pct_q_w)
-
-gen ar1_coef_abs =  abs(ar1_coef_trend)
-gen corr1_abs =  abs(corr_lag1)
-
-preserve
-duplicates drop gvkey, force
-pwcorr firm_mean_gap firm_sd_gap ar1_coef_abs corr1_abs, sig
-restore
-
-pwcorr gap_pct_q_w firm_sd_gap ar1_coef_abs corr1_abs atq_w mkvaltq_w btm_w lev_w roa_w inst_pct_w analyst_follow msa_count,sig
