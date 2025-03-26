@@ -309,10 +309,83 @@ twoway (line avg_gap period if init_quintile==1, lcolor(blue) lwidth(medthick)) 
 * Save the graph
 graph export "mean_reversion_gap_plot.png", replace
 
-
 * Go back to the original dataset
 restore
 
+*** Examine for 8 Quarters Ahead not 20
+
+* Ensure the data is sorted properly
+xtset gvkey yq
+
+preserve
+collapse (mean) gap_pct_q_w=gap_pct_q_w, by(gvkey yq)
+
+* Create quintiles of gap_pct_q_w for each quarter
+bysort yq: egen quintile = xtile(gap_pct_q_w), nq(5)
+
+* Store the initial value of gap_pct_q_w
+gen initial_gap = gap_pct_q_w
+
+* Generate future gap_pct_q_w values up to 8 quarters ahead
+forvalues t = 1/8 {
+    bysort gvkey (yq): gen gap_t`t' = gap_pct_q_w[_n+`t'] if gvkey==gvkey[_n+`t']
+}
+
+* Create a matrix to store average gap_pct_q_w values by quintile and time period
+matrix mean_gap = J(5, 9, .)
+matrix colnames mean_gap = t0 t1 t2 t3 t4 t5 t6 t7 t8
+
+* Calculate future average gap_pct_q_w values for each quintile
+forvalues q = 1/5 {
+    * Store the initial average gap_pct_q_w in the first column (t0)
+    quietly sum gap_pct_q_w if quintile == `q'
+    matrix mean_gap[`q', 1] = r(mean)
+    
+    * Calculate average future gap_pct_q_w for periods t1 through t8
+    forvalues t = 1/8 {
+        quietly sum gap_t`t' if quintile == `q'
+        matrix mean_gap[`q', `t'+1] = r(mean)
+    }
+}
+
+* Calculate overall mean for reference line
+quietly sum gap_pct_q_w
+local overall_mean = r(mean)
+
+* Save the matrix as a dataset for plotting
+clear
+svmat mean_gap, names(col)
+
+* Create an ID variable before reshaping
+gen init_quintile = _n
+
+* Reshape for easier plotting
+reshape long t, i(init_quintile) j(period)
+rename t avg_gap
+
+* Label variables
+label var period "Quarters ahead"
+label var avg_gap "Average gap_pct_q_w"
+label var init_quintile "Initial quintile"
+
+* Create the plot of gap_pct_q_w progression over time
+twoway (line avg_gap period if init_quintile==1, lcolor(blue) lwidth(medthick)) ///
+       (line avg_gap period if init_quintile==2, lcolor(green) lwidth(medthick)) ///
+       (line avg_gap period if init_quintile==3, lcolor(orange) lwidth(medthick)) ///
+       (line avg_gap period if init_quintile==4, lcolor(red) lwidth(medthick)) ///
+       (line avg_gap period if init_quintile==5, lcolor(purple) lwidth(medthick)) ///
+       (function y=`overall_mean', range(0 8) lcolor(gray) lpattern(dash)), ///
+       ytitle("Average gap_pct_q_w") xtitle("Quarters Ahead") ///
+       title("Mean Reversion in Gap Posting Rates") ///
+       subtitle("Tracking gap_pct_q_w Values Over 8 Quarters by Initial Quintile") ///
+       xlabel(0(2)8) ///
+       legend(order(1 "Q1 (Lowest)" 2 "Q2" 3 "Q3" 4 "Q4" 5 "Q5 (Highest)" 6 "Overall Mean"))
+
+* Save the graph
+graph export "mean_reversion_gap_plot_8q.png", replace
+
+* Restore the original dataset
+restore
 
 /*---------------------------------------------------------------------------*/
 /* 2.1 2010 Q2 Base Period Classification                                    */
@@ -712,53 +785,28 @@ binscatter spike_pct firm_mean_gap,xtitle("Firm Mean Gap") ytitle("Correlation_a
 * Created: March 20, 2025
 **********************************************************************
 
-* First create each individual binscatter and save it
-* Plot 1: AR(1) Coefficient Trend
-binscatter ar1_coef_trend firm_mean_gap, ///
-    xtitle("Firm Mean Gap", size(small)) ///
-    ytitle("AR(1) Coefficient Trend", size(small)) ///
-    title("AR(1) Coefficient", size(medium)) ///
-    msymbol(circle) mcolor(navy) ///
-    linetype(lfit) lcolor(maroon) ///
-    savegraph("bin1.gph") replace
-    
-* Plot 2: AR(1) Absolute Coefficient
-binscatter ar1_coef_abs firm_mean_gap, ///
-    xtitle("Firm Mean Gap", size(small)) ///
-    ytitle("AR(1) Absolute Coefficient", size(small)) ///
-    title("AR(1) Absolute Coefficient", size(medium)) ///
-    msymbol(circle) mcolor(navy) ///
-    linetype(lfit) lcolor(maroon) ///
-    savegraph("bin2.gph") replace
-    
-* Plot 3: Correlation Lag 1
-binscatter corr_lag1 firm_mean_gap, ///
-    xtitle("Firm Mean Gap", size(small)) ///
-    ytitle("Correlation Lag 1", size(small)) ///
-    title("Lag 1 Correlation", size(medium)) ///
-    msymbol(circle) mcolor(navy) ///
-    linetype(lfit) lcolor(maroon) ///
-    savegraph("bin3.gph") replace
-    
-* Plot 4: Correlation Absolute
-binscatter corr1_abs firm_mean_gap, ///
-    xtitle("Firm Mean Gap", size(small)) ///
-    ytitle("Correlation Absolute", size(small)) ///
-    title("Absolute Correlation", size(medium)) ///
-    msymbol(circle) mcolor(navy) ///
-    linetype(lfit) lcolor(maroon) ///
-    savegraph("bin4.gph") replace
-    
-* Plot 5: Spike Percentage
-binscatter spike_pct firm_mean_gap, ///
-    xtitle("Firm Mean Gap", size(small)) ///
-    ytitle("Spike Percentage", size(small)) ///
-    title("Spike Percentage", size(medium)) ///
-    msymbol(circle) mcolor(navy) ///
-    linetype(lfit) lcolor(maroon) ///
-    savegraph("bin5.gph") replace
 
+* Binscatter Plot
 
+* First set of binscatters - Firm Mean Gap as X variable
+binscatter ar1_coef_trend firm_mean_gap, xtitle("Firm Mean Gap", size(small)) ytitle("AR(1) Coefficient", size(small)) title("AR(1) Trend vs. Firm Mean Gap", size(medium)) msymbol(circle) mcolor(navy) linetype(lfit) lcolor(maroon)
+binscatter ar1_coef_abs firm_mean_gap, xtitle("Firm Mean Gap", size(small)) ytitle("AR(1) Absolute Coef", size(small)) title("AR(1) Absolute vs. Firm Mean Gap", size(medium)) msymbol(circle) mcolor(navy) linetype(lfit) lcolor(maroon)
+binscatter corr_lag1 firm_mean_gap, xtitle("Firm Mean Gap", size(small)) ytitle("Lag 1 Correlation", size(small)) title("Correlation Lag 1 vs. Firm Mean Gap", size(medium)) msymbol(circle) mcolor(navy) linetype(lfit) lcolor(maroon)
+binscatter corr1_abs firm_mean_gap, xtitle("Firm Mean Gap", size(small)) ytitle("Correlation Absolute", size(small)) title("Absolute Correlation vs. Firm Mean Gap", size(medium)) msymbol(circle) mcolor(navy) linetype(lfit) lcolor(maroon)
+binscatter spike_pct firm_mean_gap, xtitle("Firm Mean Gap", size(small)) ytitle("Spike Percentage", size(small)) title("Spike Percentage vs. Firm Mean Gap", size(medium)) msymbol(circle) mcolor(navy) linetype(lfit) lcolor(maroon)
+
+* Binscatter between Institutional Ownership and other variables
+binscatter firm_mean_gap firm_inst_pct, xtitle("Institutional Ownership %", size(small)) ytitle("Firm Mean Gap", size(small)) title("Firm Mean Gap vs. Institutional Ownership", size(medium)) msymbol(circle) mcolor(navy) linetype(lfit) lcolor(maroon)
+binscatter ar1_coef_trend firm_inst_pct, xtitle("Institutional Ownership %", size(small)) ytitle("AR(1) Coefficient", size(small)) title("AR(1) Trend vs. Institutional Ownership", size(medium)) msymbol(circle) mcolor(navy) linetype(lfit) lcolor(maroon)
+binscatter ar1_coef_abs firm_inst_pct, xtitle("Institutional Ownership %", size(small)) ytitle("AR(1) Absolute Coef", size(small)) title("AR(1) Absolute vs. Institutional Ownership", size(medium)) msymbol(circle) mcolor(navy) linetype(lfit) lcolor(maroon)
+binscatter corr_lag1 firm_inst_pct, xtitle("Institutional Ownership %", size(small)) ytitle("Lag 1 Correlation", size(small)) title("Correlation Lag 1 vs. Institutional Ownership", size(medium)) msymbol(circle) mcolor(navy) linetype(lfit) lcolor(maroon)
+binscatter corr1_abs firm_inst_pct, xtitle("Institutional Ownership %", size(small)) ytitle("Correlation Absolute", size(small)) title("Absolute Correlation vs. Institutional Ownership", size(medium)) msymbol(circle) mcolor(navy) linetype(lfit) lcolor(maroon)
+binscatter spike_pct firm_inst_pct, xtitle("Institutional Ownership %", size(small)) ytitle("Spike Percentage", size(small)) title("Spike Percentage vs. Institutional Ownership", size(medium)) msymbol(circle) mcolor(navy) linetype(lfit) lcolor(maroon)
+
+preserve
+duplicates drop gvkey, force
+pwcorr firm_mean_gap firm_sd_gap ar1_coef_trend ar1_coef_abs corr_lag1 corr1_abs spike_pct firm_inst_pct,sig
+restore
 pwcorr gap_pct_q_w firm_sd_gap ar1_coef_abs corr1_abs atq_w mkvaltq_w btm_w lev_w roa_w inst_pct_w analyst_follow msa_count,sig
 
 
